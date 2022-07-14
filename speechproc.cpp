@@ -48,8 +48,7 @@ at::Tensor read_audio(const std::string &filename, int target_sampling_rate, int
 }
 
 
-
-std::vector<std::pair<int,int>> speech_stamps(torch::Tensor audio,
+std::vector<std::pair<int,int>> speech_stamps(const at::Tensor &iaudio,
                                               const torch::jit::script::Module &model,
                                               float threshold,
                                               float neg_threshold,
@@ -59,13 +58,11 @@ std::vector<std::pair<int,int>> speech_stamps(torch::Tensor audio,
                                               int window_size_samples,
                                               int speech_pad_ms )
 {
-    // reset model state - it should be done for this specific DNN
+    // reset model state - it should be done for this specific DNN to get reproduceable output
     torch::jit::script::Module vad = model.deepcopy();
 
-    // trying to squeeze empty dimensions
-    if(audio.sizes().size() > 1)
-        if(audio.sizes()[0] == 1 and audio.sizes()[1] > 0)
-            audio = torch::squeeze(audio,0);   
+    // slice single audio channel
+    const torch::Tensor &audio = iaudio[0];
 
     int min_speech_samples = sampling_rate * min_speech_duration_ms / 1000;
     int min_silence_samples = sampling_rate * min_silence_duration_ms / 1000;
@@ -79,8 +76,10 @@ std::vector<std::pair<int,int>> speech_stamps(torch::Tensor audio,
     c10::InferenceMode guard;
     for(int current_start_sample = 0; current_start_sample < audio_length_samples; current_start_sample += window_size_samples) {
         torch::Tensor chunk = torch::slice(audio,0,current_start_sample,current_start_sample + window_size_samples);        
-        if(chunk.sizes()[0] < window_size_samples)
+        if(chunk.sizes()[0] < window_size_samples) {
+            //chunk = torch::zeros({window_size_samples});
             chunk = torch::constant_pad_nd(chunk, torch::IntList{0, int(window_size_samples - chunk.sizes()[0])}, 0);
+        }
         float prob = vad.forward({chunk, sampling_rate}).toTensor()[0].item().toFloat();
         speech_probs.emplace_back(prob);
     }
@@ -137,13 +136,101 @@ std::vector<std::pair<int,int>> speech_stamps(torch::Tensor audio,
     return speeches;
 }
 
-std::vector<std::pair<int,int>> apply_vad_8khz(at::Tensor audio, const torch::jit::script::Module &model)
+std::vector<std::pair<int,int>> apply_vad_8khz(const at::Tensor &audio, const torch::jit::script::Module &model)
 {
     return speech_stamps(audio,model,0.9f,0.9f,8000,10,10,256,30);
 }
 
-std::vector<std::pair<int,int>> apply_vad_16khz(at::Tensor audio, const torch::jit::script::Module &model)
+
+float russian_language_prob(const torch::Tensor &audio, torch::jit::script::Module &model)
 {
-    return speech_stamps(audio,model,0.9f,0.9f,16000,10,10,512,30);
+    c10::InferenceMode guard;
+    torch::Tensor lang_outputs = model.forward({audio}).toTuple()->elements()[2].toTensor();
+    torch::Tensor probs = torch::softmax(lang_outputs, 1).squeeze(0);
+    return probs[0].item().toFloat();
 }
 
+float record_duration(const at::Tensor &audio, int sampling_rate)
+{
+    return static_cast<float>(audio.sizes()[1]) / sampling_rate;
+}
+
+float speech_duration(const std::vector<std::pair<int, int> > &timestamps, int sampling_rate)
+{
+    int samples = 0;
+    for(const auto &item: timestamps)
+        samples += item.second - item.first;
+    return static_cast<float>(samples) / sampling_rate;
+}
+
+float estimate_snr(const at::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, int sampling_rate)
+{
+    // filter voice harmonics
+    torch::Tensor harmonics = torch::fft_rfft(audio[0]);
+    float f_step = static_cast<float>(sampling_rate / 2) / harmonics.sizes()[0];
+    int low = static_cast<int>(50.0f / f_step);
+    int high = static_cast<int>(3850.0f / f_step);
+    harmonics.slice(0,0,low) = 0.0f;
+    harmonics.slice(0,high,harmonics.sizes()[0]) = 0.0f;
+    torch::Tensor voice_squared = torch::fft_irfft(harmonics).square();
+    // estimate signal energy
+    float s_energy = 0.0f;
+    int s_counts = 0;
+    for(const auto &speech: speech_timestamps) {
+        s_energy += torch::sum(voice_squared.slice(0,speech.first,speech.second)).item().toFloat();
+        s_counts += speech.second - speech.first;
+    }
+    // estimate noise energy
+    torch::Tensor audio_squared = torch::square(audio[0]);
+    float n_energy = (torch::sum(audio_squared).item().toFloat() - s_energy) / (audio_squared.sizes()[0] - s_counts + 1.0E-6f);
+    s_energy /= (s_counts + 1.0E-6f);
+    return std::min(100.0f, 10.0f * std::log10((s_energy / (n_energy + 1.0E-6f)) + 1.0E-5f));
+}
+
+float estimate_overload(const at::Tensor &audio, int sampling_rate)
+{
+    int window_size = static_cast<int>(0.25f * sampling_rate);
+    std::vector<float> envelope;
+    envelope.reserve(audio.sizes()[1] / window_size + 1);
+    if(window_size < audio.sizes()[1])
+        for(int current_start_sample = 0; current_start_sample < (int)audio.sizes()[1]; current_start_sample += window_size)
+            envelope.emplace_back(audio.slice(1,current_start_sample,current_start_sample + window_size).abs().max().item().toFloat());
+    if(envelope.size() > 0) {
+        float max = *std::max_element(envelope.begin(),envelope.end());
+        int max_occurencies = 0;
+        for(size_t i = 0; i < envelope.size(); ++i)
+            if(envelope[i] == max)
+                max_occurencies++;
+        return max_occurencies == 1 ? 0.0f : float(max_occurencies) / envelope.size();
+    }
+    return 0.0f;
+}
+
+float estimate_energy_below_frequency(const at::Tensor &audio, int sampling_rate, float frequency)
+{
+    torch::Tensor amplitude_spectrum = torch::fft_rfft(audio[0]).abs();
+    float f_step = static_cast<float>(sampling_rate / 2) / amplitude_spectrum.sizes()[0];
+    int index = static_cast<int>(frequency / f_step);
+    if(index >= amplitude_spectrum.sizes()[0])
+        return 1.0f;
+    float energy_below = torch::sum(amplitude_spectrum.slice(0,0,index)).item().toFloat();
+    float energy_above = torch::sum(amplitude_spectrum.slice(0,index,amplitude_spectrum.sizes()[0])).item().toFloat();
+    return energy_below / (energy_above + energy_below + 1.0E-6f);
+}
+
+
+float many_voices_prob(const at::Tensor &audio, torch::jit::script::Module &model)
+{
+    c10::InferenceMode guard;
+    return 0;
+}
+
+std::vector<std::string> predict_sequence(const at::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, torch::jit::script::Module &model)
+{
+    std::vector<std::string> sequence;
+    if(speech_duration(speech_timestamps,8000) > 0.1) {
+        c10::InferenceMode guard;
+    }
+
+    return sequence;
+}

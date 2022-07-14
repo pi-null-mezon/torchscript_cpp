@@ -54,6 +54,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // INITIALIZATION
+    torchaudio::sox_effects::initialize_sox_effects();
+
+    // voice activity detector
     QFileInfo modelfile("./vad.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
@@ -66,14 +70,60 @@ int main(int argc, char **argv)
         vad.eval();
     }
     catch (const c10::Error& e) {
-        std::cerr << "error loading the model\n";
+        std::cerr << "error loading VAD model\n";
         return 2;
     }
+    // voice language classifier
+    modelfile.setFile("./lang.jit");
+    if(!modelfile.exists()) {
+        std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
+        return 1;
+    }
+    torch::jit::script::Module lang;
+    try {
+        c10::InferenceMode guard;
+        lang = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        lang.eval();
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "error loading LANG model\n";
+        return 2;
+    }
+    // sequence predictor
+    /*modelfile.setFile("./sequence.jit");
+    if(!modelfile.exists()) {
+        std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
+        return 1;
+    }
+    torch::jit::script::Module seq;
+    try {
+        c10::InferenceMode guard;
+        seq = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        seq.eval();
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "error loading SEQUENCE model\n";
+        return 2;
+    }
+    // many voices model
+    modelfile.setFile("./voices.jit");
+    if(!modelfile.exists()) {
+        std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
+        return 1;
+    }
+    torch::jit::script::Module voices;
+    try {
+        c10::InferenceMode guard;
+        voices = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        voices.eval();
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "error loading VOICES model\n";
+        return 2;
+    }*/
 
-    torchaudio::sox_effects::initialize_sox_effects();
-
-    //Processing
-    for(int iteration = 0 ; iteration < 5; ++iteration) {
+    // PROCESSING
+    for(int iteration = 0 ; iteration < 2; ++iteration) {
         std::cout << "ITERATION # " << iteration << std::endl;
         auto info = torchaudio::sox_io::get_info_file(argv[1],"wav");
         std::cout << "FILE META INFORMATION" << std::endl;
@@ -83,22 +133,41 @@ int main(int argc, char **argv)
         std::cout << " - bits per sample:     " << std::get<3>(info) << std::endl;
         std::cout << " - encoding:            " << std::get<4>(info) << std::endl;
 
-        torch::Tensor tensor = read_audio(argv[1],8000,1);
+        torch::Tensor wav8 = read_audio(argv[1],8000,1);
 
         QElapsedTimer qet;
         qet.start();
-        std::vector<std::pair<int,int>> speech_timestamps = apply_vad_8khz(tensor,vad);
-        std::cout << QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
-
+        std::vector<std::pair<int,int>> speech_timestamps = apply_vad_8khz(wav8,vad);
+        std::cout << "VAD duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
         /*for(const auto &item: speech_timestamps) {
             std::cout << item.first << "-" << item.second << std::endl;
         }*/
 
+        torch::Tensor wav16 = read_audio(argv[1],16000,1);
+
+        qet.start();
+        std::cout << " - russian language prob " << russian_language_prob(wav16,lang) << std::endl;
+        std::cout << "LNAG duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
+
+        std::cout << " - record duration: " << record_duration(wav8,8000) << " s" << std::endl;
+        std::cout << " - speech duration: " << speech_duration(speech_timestamps,8000) << " s" << std::endl;
+        std::cout << " - snr: " <<  estimate_snr(wav8,speech_timestamps,8000) << " dB" << std::endl;
+        std::cout << " - overload: " << estimate_overload(wav8,8000) << std::endl;
+        std::cout << " - upsampled: " << estimate_energy_below_frequency(wav16,16000,4000.0f) << std::endl;
+
+        /*const std::vector<std::string> sequence = predict_sequence(wav8,speech_timestamps,seq);
+        std::cout << " - sequence: ";
+        for(const auto & item: sequence)
+            std::cout << item;
+        std::cout << std::endl;
+        std::cout << " - many voices prob: " << many_voices_prob(wav8,voices) << std::endl;*/
+
+
         #ifdef ENABLE_VISUALIZATION
-        size_t length = tensor.sizes()[1];
+        size_t length = wav8.sizes()[1];
         float *audio = new float[length];
         for(size_t i = 0; i < length; ++i)
-            audio[i] = tensor[0][i].item().toFloat();
+            audio[i] = wav8[0][i].item().toFloat();
         showWindowWithPlot("probe",cv::Size(1280,480),audio,length,1.0f,-1.0f,cv::Scalar(0,255,0));
         float *speech = new float[length];
         for(size_t i = 0; i < length; ++i)
@@ -108,7 +177,7 @@ int main(int argc, char **argv)
                 speech[i] = 1.0f;
         showWindowWithPlot("vad",cv::Size(1280,480),speech,length,1.0f,-1.0f,cv::Scalar(0,255,0));
 
-        cv::waitKey(100);
+        cv::waitKey(0);
         #endif
     }
     return 0;
