@@ -58,7 +58,7 @@ int main(int argc, char **argv)
     torchaudio::sox_effects::initialize_sox_effects();
 
     // voice activity detector
-    QFileInfo modelfile("./vad.jit");
+    QFileInfo modelfile("./vad_net.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
         return 1;
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
         return 2;
     }
     // voice language classifier
-    modelfile.setFile("./lang.jit");
+    modelfile.setFile("./lang_net.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
         return 1;
@@ -90,40 +90,40 @@ int main(int argc, char **argv)
         return 2;
     }
     // sequence predictor
-    /*modelfile.setFile("./sequence.jit");
+    modelfile.setFile("./sequence_net.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
         return 1;
     }
-    torch::jit::script::Module seq;
+    torch::jit::script::Module sequence_model;
     try {
         c10::InferenceMode guard;
-        seq = torch::jit::load(modelfile.absoluteFilePath().toStdString());
-        seq.eval();
+        sequence_model = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        sequence_model.eval();
     }
     catch (const c10::Error& e) {
         std::cerr << "error loading SEQUENCE model\n";
         return 2;
     }
     // many voices model
-    modelfile.setFile("./voices.jit");
+    modelfile.setFile("./singlevoice_net.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
         return 1;
     }
-    torch::jit::script::Module voices;
+    torch::jit::script::Module singlevoice_model;
     try {
         c10::InferenceMode guard;
-        voices = torch::jit::load(modelfile.absoluteFilePath().toStdString());
-        voices.eval();
+        singlevoice_model = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        singlevoice_model.eval();
     }
     catch (const c10::Error& e) {
         std::cerr << "error loading VOICES model\n";
         return 2;
-    }*/
+    }
 
     // PROCESSING
-    for(int iteration = 0 ; iteration < 2; ++iteration) {
+    for(int iteration = 0 ; iteration < 4; ++iteration) {
         std::cout << "ITERATION # " << iteration << std::endl;
         auto info = torchaudio::sox_io::get_info_file(argv[1],"wav");
         std::cout << "FILE META INFORMATION" << std::endl;
@@ -155,12 +155,17 @@ int main(int argc, char **argv)
         std::cout << " - overload: " << estimate_overload(wav8,8000) << std::endl;
         std::cout << " - upsampled: " << estimate_energy_below_frequency(wav16,16000,4000.0f) << std::endl;
 
-        /*const std::vector<std::string> sequence = predict_sequence(wav8,speech_timestamps,seq);
+        qet.start();
+        const std::vector<std::string> sequence = predict_sequence(wav8,speech_timestamps,sequence_model);
+        std::cout << "SEQUENCE duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
         std::cout << " - sequence: ";
         for(const auto & item: sequence)
             std::cout << item;
         std::cout << std::endl;
-        std::cout << " - many voices prob: " << many_voices_prob(wav8,voices) << std::endl;*/
+
+        qet.start();
+        std::cout << " - many voices prob: " << many_voices_prob(wav8,singlevoice_model) << std::endl;
+        std::cout << "MANY VOICES duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
 
 
         #ifdef ENABLE_VISUALIZATION

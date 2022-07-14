@@ -77,8 +77,9 @@ std::vector<std::pair<int,int>> speech_stamps(const at::Tensor &iaudio,
     for(int current_start_sample = 0; current_start_sample < audio_length_samples; current_start_sample += window_size_samples) {
         torch::Tensor chunk = torch::slice(audio,0,current_start_sample,current_start_sample + window_size_samples);        
         if(chunk.sizes()[0] < window_size_samples) {
-            //chunk = torch::zeros({window_size_samples});
-            chunk = torch::constant_pad_nd(chunk, torch::IntList{0, int(window_size_samples - chunk.sizes()[0])}, 0);
+            torch::Tensor padded = torch::zeros({window_size_samples});
+            padded.slice(0,0,chunk.sizes()[0]) = chunk;
+            chunk = std::move(padded);
         }
         float prob = vad.forward({chunk, sampling_rate}).toTensor()[0].item().toFloat();
         speech_probs.emplace_back(prob);
@@ -145,8 +146,8 @@ std::vector<std::pair<int,int>> apply_vad_8khz(const at::Tensor &audio, const to
 float russian_language_prob(const torch::Tensor &audio, torch::jit::script::Module &model)
 {
     c10::InferenceMode guard;
-    torch::Tensor lang_outputs = model.forward({audio}).toTuple()->elements()[2].toTensor();
-    torch::Tensor probs = torch::softmax(lang_outputs, 1).squeeze(0);
+    torch::Tensor prediction = model.forward({audio}).toTuple()->elements()[2].toTensor();
+    torch::Tensor probs = torch::softmax(prediction, 1).squeeze(0);
     return probs[0].item().toFloat();
 }
 
@@ -219,18 +220,75 @@ float estimate_energy_below_frequency(const at::Tensor &audio, int sampling_rate
 }
 
 
+torch::Tensor normalize(const torch::Tensor& tensor) {
+    assert(tensor.sizes().size() == 1);
+    return tensor / torch::max(tensor.abs());
+}
+
+
+torch::Tensor fix_length(const torch::Tensor& tensor, int target_length) {
+    assert(tensor.sizes().size() == 1);
+    torch::Tensor out;
+    if(tensor.sizes()[0] < target_length) {
+        int gap = (target_length - tensor.sizes()[0] ) / 2;
+        out = torch::zeros({target_length});
+        out.slice(0,gap,gap + tensor.sizes()[0]) = tensor;
+    } else if(tensor.sizes()[0] > target_length) {
+        int shift = (tensor.sizes()[0] - target_length) / 2;
+        out = tensor.slice(0, shift, shift + target_length);
+    }
+    return out;
+}
+
+
 float many_voices_prob(const at::Tensor &audio, torch::jit::script::Module &model)
 {
+    // split into chunks
+    int window_size = 5 * 8000; // hyperparameters
+    std::vector<torch::Tensor> chunks;
+    chunks.reserve(audio.sizes()[1] / window_size + 1);
+    for(int start = 0; start < (int)audio.sizes()[1]; start += window_size) {
+        torch::Tensor chunk = normalize(audio[0].slice(0,start,start + window_size));
+        if(chunk.sizes()[0] > 0.75 * window_size || chunks.size() == 0) {
+            if(chunk.sizes()[0] < window_size) {
+                torch::Tensor tmp = torch::zeros({window_size});
+                tmp.slice(0,0,chunk.sizes()[0]) = chunk;
+                chunks.emplace_back(tmp);
+            } else {
+                chunks.emplace_back(chunk);
+            }
+        }
+    }
+    torch::Tensor batch_tensor = torch::stack(chunks).unsqueeze(1);
     c10::InferenceMode guard;
-    return 0;
+    torch::Tensor prediction = model({batch_tensor}).toTensor();
+    // softmax over labels dimension
+    torch::Tensor probs = torch::softmax(prediction, 1);
+    // average over batch dimension
+    return torch::mean(probs,0)[1].item().toFloat();
 }
+
 
 std::vector<std::string> predict_sequence(const at::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, torch::jit::script::Module &model)
 {
     std::vector<std::string> sequence;
     if(speech_duration(speech_timestamps,8000) > 0.1) {
-        c10::InferenceMode guard;
+        std::vector<torch::Tensor> batch;
+        batch.reserve(speech_timestamps.size());
+        for(const auto &part: speech_timestamps) {
+            int duration = part.second - part.first;
+            if(duration > 1500)
+                batch.emplace_back(normalize(fix_length(audio[0].slice(0,part.first,part.second), 8000)));
+        }
+        if(batch.size() > 0) {
+            c10::InferenceMode guard;
+            torch::Tensor batch_tensor = torch::stack(batch).unsqueeze(1);
+            torch::Tensor prediction = model.forward({batch_tensor}).toTensor();
+            for(int i = 0; i < prediction.sizes()[0]; ++i) {
+                int label = torch::argmax(prediction[i]).item().toInt();
+                sequence.emplace_back(label == 10 ? "!" : std::to_string(label));
+            }
+        }
     }
-
     return sequence;
 }
