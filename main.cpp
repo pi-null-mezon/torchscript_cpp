@@ -58,19 +58,19 @@ int main(int argc, char **argv)
     torchaudio::sox_effects::initialize_sox_effects();
 
     // voice activity detector
-    QFileInfo modelfile("./vad_net.jit");
+    QFileInfo modelfile("./silero_vad_net.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
         return 1;
     }
-    torch::jit::script::Module vad;
+    torch::jit::script::Module vad_silero;
     try {
         c10::InferenceMode guard;
-        vad = torch::jit::load(modelfile.absoluteFilePath().toStdString());
-        vad.eval();
+        vad_silero = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        vad_silero.eval();
     }
     catch (const c10::Error& e) {
-        std::cerr << "error loading VAD model\n";
+        std::cerr << "error loading silero VAD model\n";
         return 2;
     }
     // voice language classifier
@@ -122,9 +122,26 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    // biolut voice activity detector
+    modelfile.setFile("./bisolut_vad_net.jit");
+    if(!modelfile.exists()) {
+        std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
+        return 1;
+    }
+    torch::jit::script::Module vad_bisolut;
+    try {
+        c10::InferenceMode guard;
+        vad_bisolut = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        vad_bisolut.eval();
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "error loading bisolut VAD model\n";
+        return 2;
+    }
+
     // PROCESSING
     for(int iteration = 0 ; iteration < 4; ++iteration) {
-        std::cout << "ITERATION # " << iteration << std::endl;
+        std::cout << "ITERATION # " << iteration << "\n--------------" <<std::endl;
         auto info = torchaudio::sox_io::get_info_file(argv[1],"wav");
         std::cout << "FILE META INFORMATION" << std::endl;
         std::cout << " - sample rate:         " << std::get<0>(info) << std::endl;
@@ -134,39 +151,42 @@ int main(int argc, char **argv)
         std::cout << " - encoding:            " << std::get<4>(info) << std::endl;
 
         torch::Tensor wav8 = read_audio(argv[1],8000,1);
+        torch::Tensor wav16 = read_audio(argv[1],16000,1);
 
         QElapsedTimer qet;
         qet.start();
-        std::vector<std::pair<int,int>> speech_timestamps = apply_vad_8khz(wav8,vad);
-        std::cout << "VAD duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
+        std::vector<std::pair<int,int>> silero_speech_timestamps = apply_silero_vad_8khz(wav8,vad_silero);
+        std::cout << "vad_silero duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
         /*for(const auto &item: speech_timestamps) {
             std::cout << item.first << "-" << item.second << std::endl;
         }*/
 
-        torch::Tensor wav16 = read_audio(argv[1],16000,1);
+        qet.start();
+        std::vector<std::pair<int,int>> bisolut_speech_timestamps = apply_bisolut_vad_8khz(wav8,vad_bisolut);
+        std::cout << "vad_bisolut duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
 
         qet.start();
         std::cout << " - russian language prob " << russian_language_prob(wav16,lang) << std::endl;
         std::cout << "LNAG duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
-
-        std::cout << " - record duration: " << record_duration(wav8,8000) << " s" << std::endl;
-        std::cout << " - speech duration: " << speech_duration(speech_timestamps,8000) << " s" << std::endl;
-        std::cout << " - snr: " <<  estimate_snr(wav8,speech_timestamps,8000) << " dB" << std::endl;
         std::cout << " - overload: " << estimate_overload(wav8,8000) << std::endl;
         std::cout << " - upsampled: " << estimate_energy_below_frequency(wav16,16000,4000.0f) << std::endl;
+        std::cout << " - record duration: " << record_duration(wav8,8000) << " s" << std::endl;
 
-        qet.start();
-        const std::vector<std::string> sequence = predict_sequence(wav8,speech_timestamps,sequence_model);
-        std::cout << "SEQUENCE duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
-        std::cout << " - sequence: ";
-        for(const auto & item: sequence)
-            std::cout << item;
-        std::cout << std::endl;
+        for(const auto & speech_timestamps : {silero_speech_timestamps, bisolut_speech_timestamps}) {
+            std::cout << " - speech duration: " << speech_duration(speech_timestamps,8000) << " s" << std::endl;
+            std::cout << " - snr: " <<  estimate_snr(wav8,speech_timestamps,8000) << " dB" << std::endl;
+            qet.start();
+            const std::vector<std::string> sequence = predict_sequence(wav8,speech_timestamps,sequence_model);
+            std::cout << "SEQUENCE duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
+            std::cout << " - sequence: '";
+            for(const auto & item: sequence)
+                std::cout << item;
+            std::cout << "'" << std::endl;
+        }
 
         qet.start();
         std::cout << " - many voices prob: " << many_voices_prob(wav8,singlevoice_model) << std::endl;
         std::cout << "MANY VOICES duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
-
 
         #ifdef ENABLE_VISUALIZATION
         size_t length = wav8.sizes()[1];
@@ -177,10 +197,10 @@ int main(int argc, char **argv)
         float *speech = new float[length];
         for(size_t i = 0; i < length; ++i)
             speech[i] = 0;
-        for(size_t j = 0; j < speech_timestamps.size(); ++j)
-            for(int i = speech_timestamps[j].first; i < speech_timestamps[j].second; ++i)
+        for(size_t j = 0; j < bisolut_speech_timestamps.size(); ++j)
+            for(int i = bisolut_speech_timestamps[j].first; i < bisolut_speech_timestamps[j].second; ++i)
                 speech[i] = 1.0f;
-        showWindowWithPlot("vad",cv::Size(1280,480),speech,length,1.0f,-1.0f,cv::Scalar(0,255,0));
+        showWindowWithPlot("vad_silero",cv::Size(1280,480),speech,length,1.0f,-1.0f,cv::Scalar(0,255,0));
 
         cv::waitKey(0);
         #endif

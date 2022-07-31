@@ -40,7 +40,7 @@ float record_duration(const torch::Tensor &audio, int sampling_rate);
  * @return speech timestamps vector
  * @note if you do not want to experiment with parameters simply use apply_vad_8khz()
 */
-std::vector<std::pair<int,int>> speech_stamps(const torch::Tensor &audio,
+std::vector<std::pair<int,int>> silero_speech_stamps(const torch::Tensor &audio,
                                              const torch::jit::script::Module &model,
                                              float threshold,
                                              float neg_threshold,
@@ -55,7 +55,37 @@ std::vector<std::pair<int,int>> speech_stamps(const torch::Tensor &audio,
  * @param model - VAD model
  * @return speech timestamps vector
  */
-std::vector<std::pair<int,int>> apply_vad_8khz(const torch::Tensor &audio, const torch::jit::script::Module &model);
+std::vector<std::pair<int,int>> apply_silero_vad_8khz(const torch::Tensor &audio, const torch::jit::script::Module &model);
+
+/**
+ * @brief process audio tensor and return vector of speech timestamps
+ * @param audio - input audio tensor with single channel, i.e.: 1xN
+ * @param model
+ * @param threshold
+ * @param neg_threshold
+ * @param sampling_rate
+ * @param min_speech_duration_ms
+ * @param min_silence_duration_ms
+ * @param speech_pad_ms
+ * @return speech timestamps vector
+ * @note if you do not want to experiment with parameters simply use apply_bisolut_vad_8khz()
+ */
+std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
+                                              torch::jit::script::Module &model,
+                                              float threshold,
+                                              float neg_threshold,
+                                              int sampling_rate,
+                                              int min_speech_duration_ms,
+                                              int min_silence_duration_ms,
+                                              int speech_pad_ms);
+
+/**
+ * @brief apply VAD to 8 kHz audio
+ * @param audio - input audio tensor with single channel (i.e. 1xN) and 8000 Hz sample rate
+ * @param model - VAD model
+ * @return speech timestamps vector
+ */
+std::vector<std::pair<int,int>> apply_bisolut_vad_8khz(const at::Tensor &audio, torch::jit::script::Module &model);
 
 /**
  * @brief calculate speech duration
