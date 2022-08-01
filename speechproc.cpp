@@ -157,7 +157,7 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
                                               int speech_pad_ms)
 {
     // slice single audio channel
-    const torch::Tensor &audio = normalize(iaudio[0]);
+    const torch::Tensor &audio = iaudio[0];
 
     const int min_speech_samples = sampling_rate * min_speech_duration_ms / 1000;
     const int min_silence_samples = sampling_rate * min_silence_duration_ms / 1000;
@@ -241,7 +241,7 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
 
 std::vector<std::pair<int,int>> apply_bisolut_vad_8khz(const at::Tensor &audio, torch::jit::script::Module &model)
 {
-    return bisolut_speech_stamps(audio,model,0.9f,0.9f,8000,100,50,30);
+    return bisolut_speech_stamps(audio,model,0.6f,0.6f,8000,100,30,20);
 }
 
 

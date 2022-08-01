@@ -10,6 +10,9 @@ linux {
             -lc10 \
             -ltorch_cpu
 
-    QMAKE_CXXFLAGS += -D_GLIBCXX_USE_CXX11_ABI=1
-    old_cxx11_abi: QMAKE_CXXFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
+    old_cxx11_abi {
+        QMAKE_CXXFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
+    } else {
+        QMAKE_CXXFLAGS += -D_GLIBCXX_USE_CXX11_ABI=1
+    }
 }
