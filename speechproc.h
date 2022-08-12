@@ -124,10 +124,18 @@ float estimate_energy_below_frequency(const torch::Tensor &audio, int sampling_r
 /**
  * @brief process audio tensor and return Russian language probability estiamtion
  * @param audio - input audio tensor with single channel and 16000 Hz sample rate
- * @param model - lang  prediction model
+ * @param model - lang  prediction model (SILERO 4 languages)
  * @return model's confidence about Russian language in audio
  */
 float russian_language_prob(const torch::Tensor &audio, torch::jit::script::Module &model);
+
+/**
+ * @brief process audio tensor and return Russian language probability estiamtion
+ * @param audio - input audio tensor with single channel and 8000 Hz sample rate
+ * @param model - lang  prediction model (BISOLUT 7 languages)
+ * @return model's confidence about Russian language in audio
+ */
+float ru_prob(const torch::Tensor &audio, torch::jit::script::Module &model);
 
 /**
  * @brief process audio tensor and return many voices on record probability

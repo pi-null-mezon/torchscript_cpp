@@ -74,19 +74,19 @@ int main(int argc, char **argv)
         return 2;
     }
     // voice language classifier
-    modelfile.setFile("./lang_net.jit");
+    modelfile.setFile("./silero_lang_net.jit");
     if(!modelfile.exists()) {
         std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
         return 1;
     }
-    torch::jit::script::Module lang;
+    torch::jit::script::Module lang_silero;
     try {
         c10::InferenceMode guard;
-        lang = torch::jit::load(modelfile.absoluteFilePath().toStdString());
-        lang.eval();
+        lang_silero = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        lang_silero.eval();
     }
     catch (const c10::Error& e) {
-        std::cerr << "error loading LANG model\n";
+        std::cerr << "error loading SILERO LANG model\n";
         return 2;
     }
     // sequence predictor
@@ -139,6 +139,23 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    // biolut LANG activity detector
+    modelfile.setFile("./bisolut_lang_net.jit");
+    if(!modelfile.exists()) {
+        std::cerr << QString("model '%1' not found on disk!").arg(modelfile.absoluteFilePath()).toStdString() << std::endl;
+        return 1;
+    }
+    torch::jit::script::Module lang_bisolut;
+    try {
+        c10::InferenceMode guard;
+        lang_bisolut = torch::jit::load(modelfile.absoluteFilePath().toStdString());
+        lang_bisolut.eval();
+    }
+    catch (const c10::Error& e) {
+        std::cerr << "error loading bisolut LANG model\n";
+        return 2;
+    }
+
     // PROCESSING
     for(int iteration = 0 ; iteration < 4; ++iteration) {
         std::cout << "ITERATION # " << iteration << "\n--------------" <<std::endl;
@@ -166,8 +183,12 @@ int main(int argc, char **argv)
         std::cout << "vad_bisolut duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
 
         qet.start();
-        std::cout << " - russian language prob " << russian_language_prob(wav16,lang) << std::endl;
-        std::cout << "LNAG duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
+        std::cout << " - russian language prob (SILERO): " << russian_language_prob(wav16,lang_silero) << std::endl;
+        std::cout << "SILERO LANG duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
+        qet.start();
+        std::cout << " - russian language prob (BISOLUT): " << ru_prob(wav8,lang_bisolut) << std::endl;
+        std::cout << "BISOLUT LANG duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
+
         std::cout << " - overload: " << estimate_overload(wav8,8000) << std::endl;
         std::cout << " - upsampled: " << estimate_energy_below_frequency(wav16,16000,4000.0f) << std::endl;
         std::cout << " - record duration: " << record_duration(wav8,8000) << " s" << std::endl;

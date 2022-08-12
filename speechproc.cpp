@@ -253,6 +253,14 @@ float russian_language_prob(const torch::Tensor &audio, torch::jit::script::Modu
     return probs[0].item().toFloat();
 }
 
+float ru_prob(const torch::Tensor &audio, torch::jit::script::Module &model)
+{
+    c10::InferenceMode guard;
+    torch::Tensor prediction = model.forward({normalize(audio.squeeze(0)).unsqueeze(0).unsqueeze(0)}).toTensor();
+    torch::Tensor probs = torch::softmax(prediction, 1).squeeze(0);
+    return probs[4].item().toFloat();
+}
+
 float record_duration(const at::Tensor &audio, int sampling_rate)
 {
     return static_cast<float>(audio.sizes()[1]) / sampling_rate;
