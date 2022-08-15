@@ -2,7 +2,7 @@
 # step 2 - build torchaudio
 linux {
     TORCHAUDIO_SOURCES = "/home/alex/Programming/3rdParties/torchaudio/audio-0.11.0-cxx11"
-    old_cxx11_abi: TORCHAUDIO_SOURCES = "/home/alex/Programming/3rdParties/torchaudio/audio-0.11.0"
+    old_cxx_abi: TORCHAUDIO_SOURCES = "/home/alex/Programming/3rdParties/torchaudio/audio-0.11.0"
     TORCHAUDIO_INSTALL = $${TORCHAUDIO_SOURCES}/third_party/install
 
     SOURCES += $${TORCHAUDIO_SOURCES}/torchaudio/csrc/sox/io.cpp \

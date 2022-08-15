@@ -1,7 +1,7 @@
 # step 1 - download C++ torch binaries from https://pytorch.org
 linux {
     TORCH_DISTRIB = "/home/alex/Programming/3rdParties/torchaudio/libtorch-cxx11-abi-shared-with-deps-1.11.0+cpu/libtorch"
-    old_cxx11_abi: TORCH_DISTRIB = "/home/alex/Programming/3rdParties/torchaudio/libtorch-shared-with-deps-1.11.0+cpu/libtorch"
+    old_cxx_abi: TORCH_DISTRIB = "/home/alex/Programming/3rdParties/torchaudio/libtorch-shared-with-deps-1.11.0+cpu/libtorch"
 
     INCLUDEPATH += $${TORCH_DISTRIB} \
                    $${TORCH_DISTRIB}/include
@@ -10,7 +10,7 @@ linux {
             -lc10 \
             -ltorch_cpu
 
-    old_cxx11_abi {
+    old_cxx_abi {
         QMAKE_CXXFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
     } else {
         QMAKE_CXXFLAGS += -D_GLIBCXX_USE_CXX11_ABI=1
