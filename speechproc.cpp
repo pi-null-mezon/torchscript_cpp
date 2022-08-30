@@ -333,7 +333,7 @@ float estimate_energy_below_frequency(const at::Tensor &audio, int sampling_rate
 torch::Tensor fix_length(const torch::Tensor& tensor, int target_length) {
     assert(tensor.sizes().size() == 1);
     torch::Tensor out;
-    if(tensor.sizes()[0] < target_length) {
+    if(tensor.sizes()[0] <= target_length) {
         int gap = (target_length - tensor.sizes()[0] ) / 2;
         out = torch::zeros({target_length});
         out.slice(0,gap,gap + tensor.sizes()[0]) = tensor;
