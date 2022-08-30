@@ -9,6 +9,34 @@
 #include <torchaudio/csrc/sox/io.h>
 #include <torchaudio/csrc/sox/effects.h>
 
+#include <sndfile.h>
+
+/**
+ * @brief read SF_INFO instance to understand codec type and depth
+ * @param info - SF_INFO instance
+ * @param name - codec name as string
+ * @param depth - bit depth os samples
+ */
+void check_sf_format(const SF_INFO &info, std::string &name, int &depth);
+
+/**
+ * @brief read audio from file to torch::Tensor
+ * @param filename
+ * @param sampling_rate - target sampling rate
+ * @param ok - optional argument to check if data has been red successfully
+ * @return audio in torch::Tensor format
+ */
+torch::Tensor read_audio_sndfile(const std::string &filename, int target_sampling_rate, SF_INFO &sfinfo, bool *ok=nullptr);
+
+/**
+ * @brief read audio from memory buffer to torch::Tensor
+ * @param content - pointer to binary data in memory
+ * @param content_size - binary data size in bytes
+ * @param ok - optional argument to check if data has been red successfully
+ * @return audio in torch::Tensor format
+ */
+torch::Tensor read_audio_sndfile(const uint8_t *content, uint64_t content_size, int target_sampling_rate, SF_INFO &sfinfo, bool *ok=nullptr);
+
 /**
  * @brief read audio from file to torch::Tensor
  * @param filename
@@ -16,7 +44,7 @@
  * @return audio in torch::Tensor format
  * @note call torchaudio::sox_effects::initialize_sox_effects() once before use this
  */
-torch::Tensor read_audio(const std::string &filename, int target_sampling_rate, int target_channels);
+torch::Tensor read_audio_torchaudio(const std::string &filename, int target_sampling_rate, int target_channels);
 
 /**
  * @brief calculate record duration

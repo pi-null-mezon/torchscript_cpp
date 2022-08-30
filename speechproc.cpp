@@ -1,12 +1,13 @@
 #include "speechproc.h"
 
+#include <soxr.h>
 
 torch::Tensor normalize(const torch::Tensor& tensor) {
     assert(tensor.sizes().size() == 1);
     return tensor / torch::max(tensor.abs());
 }
 
-torch::Tensor read_audio(const std::string &filename, int target_sampling_rate, int target_channels)
+torch::Tensor read_audio_torchaudio(const std::string &filename, int target_sampling_rate, int target_channels)
 {
     std::tuple<torch::Tensor, int64_t> data = torchaudio::sox_io::load_audio_file(filename,0,-1,true,true,"wav");
     const torch::Tensor &raw_tensor = std::get<0>(data);
@@ -241,7 +242,7 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
 
 std::vector<std::pair<int,int>> apply_bisolut_vad_8khz(const at::Tensor &audio, torch::jit::script::Module &model)
 {
-    return bisolut_speech_stamps(audio,model,0.6f,0.6f,8000,100,30,20);
+    return bisolut_speech_stamps(audio,model,0.75f,0.75f,8000,100,30,20);
 }
 
 
@@ -395,3 +396,183 @@ std::vector<std::string> predict_sequence(const at::Tensor &audio, const std::ve
     }
     return sequence;
 }
+
+void check_sf_format(const SF_INFO &info, std::string &name, int &depth)
+{
+    if((info.format & 0xFF0000) == 0x010000) {
+        name = "WAV";
+        depth = 0;
+        if((info.format & 0xFFFF) == 0x0001) {
+            name += ":PCM_S8";
+            depth = 8;
+        } else if((info.format & 0xFFFF) == 0x0002) {
+            name += ":PCM_16";
+            depth = 16;
+        } else if((info.format & 0xFFFF) == 0x0003) {
+            name += ":PCM_24";
+            depth = 24;
+        } else if((info.format & 0xFFFF) == 0x0004) {
+            name += ":PCM_32";
+            depth = 32;
+        } else if((info.format & 0xFFFF) == 0x0005) {
+            name += ":PCM_U8";
+            depth = 8;
+        }
+    } else {
+        name = "encoded";
+        depth = -1;
+    }
+}
+
+at::Tensor read_audio_sndfile(const std::string &filename, int target_sampling_rate, SF_INFO &sfinfo, bool *ok)
+{
+    if(ok)
+        *ok = false;
+
+    memset (&sfinfo, 0, sizeof (sfinfo)) ;
+    SNDFILE	*infile;
+    if (! (infile = sf_open (filename.c_str(), SFM_READ, &sfinfo)))
+        return torch::Tensor();
+
+    std::vector<float> waveform, buffer;
+    waveform.reserve(sfinfo.channels*sfinfo.frames);
+    buffer.resize(4096);
+    int	readcount;
+    while((readcount = (int) sf_read_float (infile, buffer.data(), buffer.size())))
+        waveform.insert(waveform.end(),buffer.begin(),buffer.begin()+readcount);
+    sf_close (infile) ;
+
+    std::vector<float> in;
+    in.resize(sfinfo.frames);
+    float acc;
+    for(int j = 0; j < sfinfo.frames; ++j) {
+        acc = 0.0f;
+        for(int i = 0; i < sfinfo.channels; ++i)
+            acc += waveform[j*sfinfo.channels + i];
+        in[j] = acc / sfinfo.channels;
+    }
+    std::vector<float> out;
+    double orate = target_sampling_rate, irate = sfinfo.samplerate;
+    out.resize((size_t)(in.size() * orate / irate + .5));
+    size_t odone;
+
+    soxr_error_t error = soxr_oneshot(irate, orate, 1,
+    in.data(), in.size(), NULL,
+    out.data(), out.size(), &odone,
+    NULL, NULL, NULL);
+
+    if(!error) {
+        if(ok)
+            *ok = true;
+        out.resize(odone);
+        return torch::from_blob(out.data(),{static_cast<int64_t>(out.size())},torch::TensorOptions().dtype(torch::kFloat)).clone().unsqueeze(0);
+    }
+    return torch::Tensor();
+}
+
+// READ FROM MEMORY BUFFER FACILITIES START
+
+struct CustomMemoryBuffer {
+    CustomMemoryBuffer(const uint8_t * _data, sf_count_t _length) : data(_data), length(_length), pos(0) {}
+    const uint8_t *data;
+    sf_count_t length;
+    sf_count_t pos;
+};
+
+static sf_count_t buffer_get_filelen (void *user_data)
+{
+    CustomMemoryBuffer *buff = (CustomMemoryBuffer *) user_data ;
+    return buff->length;
+}
+
+static sf_count_t buffer_seek (sf_count_t offset, int whence, void *user_data)
+{
+    CustomMemoryBuffer *buff = (CustomMemoryBuffer *) user_data;
+    switch (whence) {
+        case SEEK_SET:
+            buff->pos = offset;
+            break;
+        case SEEK_CUR:
+            buff->pos += offset;
+            break ;
+        case SEEK_END:
+            buff->pos = buff->length+offset;
+            break ;
+        default:
+            break ;
+    }
+    return buff->pos;
+}
+
+static sf_count_t buffer_read (void *ptr, sf_count_t count, void *user_data)
+{
+    CustomMemoryBuffer *buff = (CustomMemoryBuffer *) user_data;
+    if((buff->pos + count) > buff->length)
+        count = buff->length - buff->pos;
+    memcpy(ptr,(void *)(buff->data + buff->pos), count);
+    buff->pos += count;
+    return count;
+}
+
+static sf_count_t buffer_tell (void *user_data)
+{
+    CustomMemoryBuffer *buff = (CustomMemoryBuffer *) user_data;
+    return buff->pos;
+}
+
+at::Tensor read_audio_sndfile(const uint8_t *content, uint64_t content_size, int target_sampling_rate, SF_INFO &sfinfo, bool *ok)
+{
+    if(ok)
+        *ok = false;
+
+    SF_VIRTUAL_IO sfvirtualio ;
+    sfvirtualio.get_filelen = buffer_get_filelen;
+    sfvirtualio.seek = buffer_seek;
+    sfvirtualio.read = buffer_read;
+    sfvirtualio.tell = buffer_tell;
+
+    CustomMemoryBuffer mem_buff(content, content_size);
+
+    memset (&sfinfo, 0, sizeof (sfinfo)) ;
+    SNDFILE	*infile;
+    if(! (infile = sf_open_virtual( &sfvirtualio, SFM_READ, &sfinfo, (void*)(&mem_buff))))
+        return torch::Tensor();
+
+    std::vector<float> waveform, buffer;
+    waveform.reserve(sfinfo.channels*sfinfo.frames);
+    buffer.resize(4096);
+    int	readcount;
+    while((readcount = (int) sf_read_float (infile, buffer.data(), buffer.size())))
+        waveform.insert(waveform.end(),buffer.begin(),buffer.begin()+readcount);
+    sf_close (infile) ;
+
+    std::vector<float> in;
+    in.resize(sfinfo.frames);
+    float acc;
+    for(int j = 0; j < sfinfo.frames; ++j) {
+        acc = 0.0f;
+        for(int i = 0; i < sfinfo.channels; ++i)
+            acc += waveform[j*sfinfo.channels + i];
+        in[j] = acc / sfinfo.channels;
+    }
+    std::vector<float> out;
+    double orate = target_sampling_rate, irate = sfinfo.samplerate;
+    out.resize((size_t)(in.size() * orate / irate + .5));
+    size_t odone;
+
+    soxr_error_t error = soxr_oneshot(irate, orate, 1,
+    in.data(), in.size(), NULL,
+    out.data(), out.size(), &odone,
+    NULL, NULL, NULL);
+
+    if(!error) {
+        if(ok)
+            *ok = true;
+        out.resize(odone);
+        return torch::from_blob(out.data(),{static_cast<int64_t>(out.size())},torch::TensorOptions().dtype(torch::kFloat)).clone().unsqueeze(0);
+    }
+    return torch::Tensor();
+}
+
+// READ FROM MEMORY BUFFER FACILITIES END
+

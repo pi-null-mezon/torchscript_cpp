@@ -6,6 +6,7 @@ SOURCES += \
         main.cpp \
         speechproc.cpp
 
+include(sndfile.pri)
 include(torchaudio.pri)
 include(torch.pri)
 
@@ -16,3 +17,4 @@ enable_visualization {
 
 HEADERS += \
     speechproc.h
+
