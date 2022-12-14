@@ -160,7 +160,7 @@ int main(int argc, char **argv)
     }
 
     // PROCESSING
-    for(int iteration = 0 ; iteration < 4; ++iteration) {
+    for(int iteration = 0 ; iteration < 1; ++iteration) {
         std::cout << "ITERATION # " << iteration << "\n--------------" <<std::endl;
 
         std::cout << "FILE META INFORMATION (libsndfile)" << std::endl;
@@ -192,7 +192,8 @@ int main(int argc, char **argv)
 
 
         //wav8 = read_audio_torchaudio(argv[1],8000,1);
-        torch::Tensor wav16 = read_audio_torchaudio(argv[1],16000,1);
+        //torch::Tensor wav16 = read_audio_torchaudio(argv[1],16000,1);
+        torch::Tensor wav16 = read_audio_sndfile((uint8_t*)wav_bin_data.data(),wav_bin_data.size(),16000,sfinfo);
 
         QElapsedTimer qet;
         qet.start();
@@ -213,13 +214,15 @@ int main(int argc, char **argv)
         std::cout << " - russian language prob (BISOLUT): " << ru_prob(wav8,lang_bisolut) << std::endl;
         std::cout << "BISOLUT LANG duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
 
-        std::cout << " - overload: " << estimate_overload(wav8,8000) << std::endl;
+        std::cout << " - overload: " << estimate_overload(wav16,16000) << std::endl;
         std::cout << " - upsampled: " << estimate_energy_below_frequency(wav16,16000,4000.0f) << std::endl;
         std::cout << " - record duration: " << record_duration(wav8,8000) << " s" << std::endl;
 
         for(const auto & speech_timestamps : {silero_speech_timestamps, bisolut_speech_timestamps}) {
+            std::cout << std::endl;
             std::cout << "   - speech duration: " << speech_duration(speech_timestamps,8000) << " s" << std::endl;
             std::cout << "   - snr: " <<  estimate_snr(wav8,speech_timestamps,8000) << " dB" << std::endl;
+            std::cout << "   - snr alt: " <<  estimate_snr_alt(wav8,speech_timestamps,8000) << " dB" << std::endl;
             qet.start();
             const std::vector<std::string> sequence = predict_sequence(wav8,speech_timestamps,sequence_model);
             std::cout << "  SEQUENCE duration: " <<  QString::number(qet.elapsed(),'f',1).toStdString() << " ms" << std::endl;
@@ -235,30 +238,39 @@ int main(int argc, char **argv)
 
         #ifdef ENABLE_VISUALIZATION
         cv::Mat plot;
-        const cv::Size plot_size(2000,400);
+        const cv::Size plot_size(2000,1000);
+        const float ylim = 1.0f;
         size_t length = wav8.sizes()[1];
         float *audio = new float[length];
         for(size_t i = 0; i < length; ++i)
             audio[i] = wav8[0][i].item().toFloat();
-        showWindowWithPlot("probe",plot_size,audio,length,1.0f,-1.0f,cv::Scalar(0,255,0),plot,false);
+        showWindowWithPlot("probe",plot_size,audio,length,ylim,-ylim,cv::Scalar(0,255,0),plot,false);
         delete [] audio;
 
         float *speech = new float[length];
         for(size_t i = 0; i < length; ++i)
             speech[i] = 0;
         for(size_t j = 0; j < silero_speech_timestamps.size(); ++j)
-            for(int i = silero_speech_timestamps[j].first; i < silero_speech_timestamps[j].second; ++i)
-                speech[i] = 1.0f;
-        showWindowWithPlot("probe",plot_size,speech,length,1.0f,-1.0f,cv::Scalar(0,100,255),plot,false);
+            for(int i = silero_speech_timestamps[j].first; i < silero_speech_timestamps[j].second; ++i) {
+                if(i == silero_speech_timestamps[j].first || i == silero_speech_timestamps[j].second - 1)
+                    speech[i] = 0.0f;
+                else
+                    speech[i] = 1.0f;
+            }
+        showWindowWithPlot("probe",plot_size,speech,length,ylim,-ylim,cv::Scalar(0,100,255),plot,false);
         delete [] speech;
 
         speech = new float[length];
         for(size_t i = 0; i < length; ++i)
             speech[i] = 0;
         for(size_t j = 0; j < bisolut_speech_timestamps.size(); ++j)
-            for(int i = bisolut_speech_timestamps[j].first; i < bisolut_speech_timestamps[j].second; ++i)
-                speech[i] = 0.5f;
-        showWindowWithPlot("probe",plot_size,speech,length,1.0f,-1.0f,cv::Scalar(255,100,0),plot);
+            for(int i = bisolut_speech_timestamps[j].first; i < bisolut_speech_timestamps[j].second; ++i) {
+                if(i == bisolut_speech_timestamps[j].first || i == bisolut_speech_timestamps[j].second - 1)
+                    speech[i] = 0.0f;
+                else
+                    speech[i] = 0.5f;
+            }
+        showWindowWithPlot("probe",plot_size,speech,length,ylim,-ylim,cv::Scalar(255,100,0),plot);
         delete [] speech;
 
         cv::waitKey(0);

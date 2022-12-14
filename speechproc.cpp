@@ -4,7 +4,7 @@
 
 torch::Tensor normalize(const torch::Tensor& tensor) {
     assert(tensor.sizes().size() == 1);
-    return tensor / torch::max(tensor.abs());
+    return torch::clamp(tensor / (torch::max(tensor.abs()) + 1.0E-7), -1.0f, 1.0f);
 }
 
 torch::Tensor read_audio_torchaudio(const std::string &filename, int target_sampling_rate, int target_channels)
@@ -154,13 +154,15 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
                                               float neg_threshold,
                                               int sampling_rate,
                                               int min_speech_duration_ms,
+                                              int max_speech_duration_ms,
                                               int min_silence_duration_ms,
                                               int speech_pad_ms)
 {
     // slice single audio channel
-    const torch::Tensor &audio = iaudio[0];
+    const torch::Tensor &audio = normalize(iaudio[0]);
 
     const int min_speech_samples = sampling_rate * min_speech_duration_ms / 1000;
+    const int max_speech_samples = sampling_rate * max_speech_duration_ms / 1000;
     const int min_silence_samples = sampling_rate * min_silence_duration_ms / 1000;
     const int speech_pad_samples = sampling_rate * speech_pad_ms / 1000;
     const int audio_length_samples = audio.sizes()[0];
@@ -195,8 +197,7 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
 
     for(int i = 0; i < (int)speech_probs.size(); ++i) {
         const float &speech_prob = speech_probs[i];
-        if(speech_prob >= threshold && temp_end
-                )
+        if(speech_prob >= threshold && temp_end)
             temp_end = 0;
         if(speech_prob >= threshold && triggered == false) {
             triggered = true;
@@ -218,23 +219,34 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
                 continue;
             }
         }
+        if(triggered == true) {
+            if(window_size_samples * i - current_speech.first >= max_speech_samples) {
+                current_speech.second = window_size_samples * i;
+                speeches.emplace_back(current_speech);
+                temp_end = 0;
+                current_speech = std::pair<int,int>();
+                triggered = false;
+            }
+        }
     }
     if(current_speech.second == audio_length_samples)
         speeches.emplace_back(current_speech);
 
     for(int i = 0; i < (int)speeches.size(); ++i) {
         std::pair<int,int> &speech = speeches[i];
-            if(i == 0)
-                speech.first = int(std::max(0, speech.first - speech_pad_samples));
-            if(i != (int)speeches.size() - 1) {
-                int silence_duration = speeches[i + 1].first - speech.second;
-                if(silence_duration < 2 * speech_pad_samples) {
-                    speech.second += int(silence_duration / 2);
-                    speeches[i + 1].first = int(std::max(0, speeches[i + 1].first - silence_duration / 2));
-                } else
-                    speech.second += int(speech_pad_samples);
+        /*if(i == 0)
+            speech.first = int(std::max(0, speech.first - speech_pad_samples));
+        if(i != (int)speeches.size() - 1) {
+            int silence_duration = speeches[i + 1].first - speech.second;
+            if(silence_duration < 2 * speech_pad_samples) {
+                speech.second += int(silence_duration / 2);
+                speeches[i + 1].first = int(std::max(0, speeches[i + 1].first - silence_duration / 2));
             } else
-                speech.second = int(std::min(audio_length_samples, speech.second + speech_pad_samples));
+                speech.second += speech_pad_samples;
+        } else
+            speech.second = int(std::min(audio_length_samples, speech.second + speech_pad_samples));*/
+        speech.first = int(std::max(0, speech.first - speech_pad_samples));
+        speech.second = int(std::min(audio_length_samples, speech.second + speech_pad_samples));
     }
 
     return speeches;
@@ -242,7 +254,7 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
 
 std::vector<std::pair<int,int>> apply_bisolut_vad_8khz(const at::Tensor &audio, torch::jit::script::Module &model)
 {
-    return bisolut_speech_stamps(audio,model,0.75f,0.75f,8000,100,30,20);
+    return bisolut_speech_stamps(audio,model,0.5f,0.5f,8000,150,600,10,100);
 }
 
 
@@ -270,8 +282,13 @@ float record_duration(const at::Tensor &audio, int sampling_rate)
 float speech_duration(const std::vector<std::pair<int, int> > &timestamps, int sampling_rate)
 {
     int samples = 0;
-    for(const auto &item: timestamps)
-        samples += item.second - item.first;
+    int last_count = 0;
+    for(const auto &item: timestamps) {
+        const int left = item.first > last_count ? item.first : last_count;
+        const int right = item.second > last_count ? item.second : last_count;
+        samples += right - left;
+        last_count = right;
+    }
     return static_cast<float>(samples) / sampling_rate;
 }
 
@@ -288,9 +305,11 @@ float estimate_snr(const at::Tensor &audio, const std::vector<std::pair<int,int>
     // estimate signal energy
     float s_energy = 0.0f;
     int s_counts = 0;
-    for(const auto &speech: speech_timestamps) {
-        s_energy += torch::sum(voice_squared.slice(0,speech.first,speech.second)).item().toFloat();
-        s_counts += speech.second - speech.first;
+    for(const auto &speech: speech_timestamps) { 
+        const int left = speech.first + 0;
+        const int right = speech.second - 0;
+        s_energy += torch::sum(voice_squared.slice(0,left,right)).item().toFloat();
+        s_counts += right - left;
     }
     // estimate noise energy
     torch::Tensor audio_squared = torch::square(audio[0]);
@@ -299,21 +318,57 @@ float estimate_snr(const at::Tensor &audio, const std::vector<std::pair<int,int>
     return std::min(100.0f, 10.0f * std::log10((s_energy / (n_energy + 1.0E-6f)) + 1.0E-5f));
 }
 
+
+float estimate_snr_alt(const at::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, int sampling_rate)
+{
+    /*torch::Tensor audio_squared = torch::square(audio[0]);
+    const float whole_energy = torch::sum(audio_squared).item().toFloat();
+    // estimate signal + noise energy
+    float energy = 0.0f;
+    int speech_counts = 0;
+    for(const auto &speech: speech_timestamps) {
+        energy += torch::sum(audio_squared.slice(0,speech.first,speech.second)).item().toFloat();
+        speech_counts += speech.second - speech.first;
+    }
+    const int nospeech_counts = audio_squared.sizes()[0] - speech_counts;
+    const float noise_energy = audio_squared.sizes()[0] * (whole_energy - energy) / (nospeech_counts + 1E-6);
+    return std::min(100.0f, 10.0f * std::log10(((whole_energy - noise_energy) / (noise_energy + 1.0E-6f)) + 1.0E-5f));*/
+
+    torch::Tensor audio_squared = torch::square(audio[0]);
+    const float whole_energy = torch::sum(audio_squared).item().toFloat();
+    // estimate signal + noise energy
+    float energy = 0.0f;
+    int speech_counts = 0;
+    int last_count = 0;
+    for(const auto &speech: speech_timestamps) {
+        const int left = speech.first > last_count ? speech.first : last_count ;
+        const int right = speech.second > last_count ? speech.second : last_count;
+        energy += torch::sum(audio_squared.slice(0,left,right)).item().toFloat();
+        speech_counts += right - left;
+        last_count = right;
+    }
+    const int nospeech_counts = audio_squared.sizes()[0] - speech_counts;
+    const float avg_noise_energy = (whole_energy - energy) / (nospeech_counts + 1.0E-6f);
+    const float n = avg_noise_energy;
+    const float s = std::max(0.0f, (energy - avg_noise_energy * speech_counts)) / (speech_counts + 1.0E-6f);
+    return std::min(50.0f, 10.0f * std::log10((s / (n + 1.0E-6f)) + 1.0E-5f));
+}
+
 float estimate_overload(const at::Tensor &audio, int sampling_rate)
 {
-    int window_size = static_cast<int>(0.25f * sampling_rate);
+    int window_size = static_cast<int>(0.75f * sampling_rate);
     std::vector<float> envelope;
     envelope.reserve(audio.sizes()[1] / window_size + 1);
     if(window_size < audio.sizes()[1])
         for(int current_start_sample = 0; current_start_sample < (int)audio.sizes()[1]; current_start_sample += window_size)
             envelope.emplace_back(audio.slice(1,current_start_sample,current_start_sample + window_size).abs().max().item().toFloat());
     if(envelope.size() > 0) {
-        float max = *std::max_element(envelope.begin(),envelope.end());
-        int max_occurencies = 0;
+        const float max_thresh = 0.999f;
+        int occurencies = 0;
         for(size_t i = 0; i < envelope.size(); ++i)
-            if(envelope[i] == max)
-                max_occurencies++;
-        return max_occurencies == 1 ? 0.0f : float(max_occurencies) / envelope.size();
+            if(envelope[i] > max_thresh)
+                occurencies++;
+        return occurencies == 1 ? 0.0f : float(occurencies) / envelope.size();
     }
     return 0.0f;
 }
@@ -370,21 +425,27 @@ float many_voices_prob(const at::Tensor &audio, torch::jit::script::Module &mode
     torch::Tensor probs = torch::softmax(prediction, 1);
     // average over batch dimension
     return torch::mean(probs,0)[1].item().toFloat();
+
+    /*c10::InferenceMode guard;
+    torch::Tensor prediction = model.forward({normalize(audio.squeeze(0)).unsqueeze(0).unsqueeze(0)}).toTensor();
+    torch::Tensor probs = torch::softmax(prediction, 1).squeeze(0);
+    return probs[1].item().toFloat();*/
 }
 
 
 std::vector<std::string> predict_sequence(const at::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, torch::jit::script::Module &model)
 {
     std::vector<std::string> sequence;
-    if(speech_duration(speech_timestamps,8000) > 0.1) {
+    if(speech_duration(speech_timestamps, 8000) > 0.1) {
         std::vector<torch::Tensor> batch;
         batch.reserve(speech_timestamps.size());
+        //std::cout << speech_timestamps.size() << std::endl;
         for(const auto &part: speech_timestamps) {
             int duration = part.second - part.first;
-            if(duration > 1500)
+            if(duration > 3000)
                 batch.emplace_back(normalize(fix_length(audio[0].slice(0,part.first,part.second), 8000)));
         }
-        if(batch.size() > 0) {
+        if(batch.size() > 0) {           
             c10::InferenceMode guard;
             torch::Tensor batch_tensor = torch::stack(batch).unsqueeze(1);
             torch::Tensor prediction = model.forward({batch_tensor}).toTensor();
@@ -444,13 +505,20 @@ at::Tensor read_audio_sndfile(const std::string &filename, int target_sampling_r
 
     std::vector<float> in;
     in.resize(sfinfo.frames);
-    float acc;
+    std::vector<bool> is_channel_zero(sfinfo.channels, true);
+    unsigned int non_zero_channels = 0;
     for(int j = 0; j < sfinfo.frames; ++j) {
-        acc = 0.0f;
-        for(int i = 0; i < sfinfo.channels; ++i)
-            acc += waveform[j*sfinfo.channels + i];
-        in[j] = acc / sfinfo.channels;
+        for(int i = 0; i < sfinfo.channels; ++i) {
+            if(waveform[j*sfinfo.channels + i] > 0.001 && is_channel_zero[i]) {
+                is_channel_zero[i] = false;
+                non_zero_channels += 1;
+            }
+            in[j] += waveform[j*sfinfo.channels + i];
+        }
     }
+    for(int j = 0; j < sfinfo.frames; ++j)
+        in[j] /= non_zero_channels;
+
     std::vector<float> out;
     double orate = target_sampling_rate, irate = sfinfo.samplerate;
     out.resize((size_t)(in.size() * orate / irate + .5));
@@ -548,13 +616,20 @@ at::Tensor read_audio_sndfile(const uint8_t *content, uint64_t content_size, int
 
     std::vector<float> in;
     in.resize(sfinfo.frames);
-    float acc;
+    std::vector<bool> is_channel_zero(sfinfo.channels, true);
+    unsigned int non_zero_channels = 0;
     for(int j = 0; j < sfinfo.frames; ++j) {
-        acc = 0.0f;
-        for(int i = 0; i < sfinfo.channels; ++i)
-            acc += waveform[j*sfinfo.channels + i];
-        in[j] = acc / sfinfo.channels;
+        for(int i = 0; i < sfinfo.channels; ++i) {
+            if(waveform[j*sfinfo.channels + i] > 0.001 && is_channel_zero[i]) {
+                is_channel_zero[i] = false;
+                non_zero_channels += 1;
+            }
+            in[j] += waveform[j*sfinfo.channels + i];
+        }
     }
+    for(int j = 0; j < sfinfo.frames; ++j)
+        in[j] /= non_zero_channels;
+
     std::vector<float> out;
     double orate = target_sampling_rate, irate = sfinfo.samplerate;
     out.resize((size_t)(in.size() * orate / irate + .5));

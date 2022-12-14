@@ -133,6 +133,15 @@ float speech_duration(const std::vector<std::pair<int,int>> &timestamps, int sam
 float estimate_snr(const torch::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, int sampling_rate);
 
 /**
+ * @brief calculate snr alternative formula
+ * @param audio - input audio tensor with single channel, i.e.: 1xN
+ * @param speech_timestamps - speech timestamps
+ * @param sampling_rate - audio sampling rate in Hz
+ * @return snr in dB
+ */
+float estimate_snr_alt(const torch::Tensor &audio, const std::vector<std::pair<int,int>> &speech_timestamps, int sampling_rate);
+
+/**
  * @brief calculate audio overload
  * @param audio - input audio tensor with single channel, i.e.: 1xN
  * @param sampling_rate - audio sampling rate in Hz
