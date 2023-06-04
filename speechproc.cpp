@@ -98,8 +98,7 @@ std::vector<std::pair<int,int>> silero_speech_stamps(const at::Tensor &iaudio,
 
     for(int i = 0; i < (int)speech_probs.size(); ++i) {
         const float &speech_prob = speech_probs[i];
-        if(speech_prob >= threshold && temp_end
-                )
+        if(speech_prob >= threshold && temp_end                )
             temp_end = 0;
         if(speech_prob >= threshold && triggered == false) {
             triggered = true;
@@ -121,9 +120,12 @@ std::vector<std::pair<int,int>> silero_speech_stamps(const at::Tensor &iaudio,
                 continue;
             }
         }
+        if(triggered == true && (i == (int)speech_probs.size() - 1)) {
+            current_speech.second = window_size_samples * i;
+            speeches.emplace_back(current_speech);
+        }
     }
-    if(current_speech.second == audio_length_samples)
-        speeches.emplace_back(current_speech);
+
 
     for(int i = 0; i < (int)speeches.size(); ++i) {
         std::pair<int,int> &speech = speeches[i];
@@ -220,8 +222,8 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
             }
         }
         if(triggered == true) {
-            if(window_size_samples * i - current_speech.first >= max_speech_samples) {
-                current_speech.second = window_size_samples * i;
+            current_speech.second = window_size_samples * i;
+            if((current_speech.second - current_speech.first >= max_speech_samples) || (i== (int)speech_probs.size()-1)) {
                 speeches.emplace_back(current_speech);
                 temp_end = 0;
                 current_speech = std::pair<int,int>();
@@ -229,8 +231,6 @@ std::vector<std::pair<int,int>> bisolut_speech_stamps(const at::Tensor &iaudio,
             }
         }
     }
-    if(current_speech.second == audio_length_samples)
-        speeches.emplace_back(current_speech);
 
     for(int i = 0; i < (int)speeches.size(); ++i) {
         std::pair<int,int> &speech = speeches[i];
